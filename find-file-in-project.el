@@ -136,6 +136,13 @@ This overrides variable `ffip-project-root' when set.")
 (defvar ffip-full-paths t
   "If non-nil, show fully project-relative paths.")
 
+(defvar ffip-file-cache-enabled nil
+  "If non-nil, enable caching of files. The cache can be invalidated
+  by using the prefix argument when invoking `find-file-in-project'.")
+
+(defvar ffip-file-caches nil
+  "An alist of cached files per root directory.")
+
 (defun ffip-project-root ()
   "Return the root of the project."
   (let ((project-root (or ffip-project-root
@@ -200,7 +207,27 @@ This overrides variable `ffip-project-root' when set.")
       (setq rlt (completing-read prompt collection))))
     rlt))
 
-(defun ffip-project-files ()
+(defun ffip-get-cached-files (root)
+  "Get the files from cache if available."
+  (assoc root ffip-file-caches))
+
+(defun ffip-populate-cache (root files)
+  "Update file cache for project."
+  (let ((cache (ffip-get-cached-files root))
+        (entry (cons root files)))
+    (setq ffip-file-caches
+          (cons entry
+           (if cache
+               (delq cache ffip-file-caches)
+             ffip-file-caches)))))
+
+(defun ffip-clear-cache (root)
+  "Removes cached files in project identified by root."
+  (let ((cache (ffip-get-cached-files root)))
+    (when cache
+      (setq ffip-file-caches (delq cache ffip-file-caches)))))
+
+(defun ffip-scan-files (root)
   "Return an alist of all filenames in the project and their path.
 
 Files with duplicate filenames are suffixed with the name of the
@@ -208,9 +235,7 @@ directory they are found in so that they are unique."
   (let (rlt
         cmd
         (old-default-directory default-directory)
-        (file-alist nil)
-        (root (expand-file-name (or ffip-project-root (ffip-project-root)
-                                    (error "No project root found")))))
+        (file-alist nil))
     (cd (file-name-as-directory root))
     ;; make the prune pattern more general
     (setq cmd (format "%s . \\( %s \\) -prune -o -type f %s %s -print %s"
@@ -235,6 +260,30 @@ directory they are found in so that they are unique."
     (cd old-default-directory)
     rlt))
 
+(defun ffip-project-files (&optional invalidate-cache)
+  "Return an alist of all filenames in the project and their
+  path. If caching is enabled the file system will be scanned on first
+  run and return the cached files on consecutive runs unless
+  invalidate-cache is non nil."
+  (let ((root (expand-file-name (or ffip-project-root (ffip-project-root)
+                                    (error "No project root found")))))
+    (if ffip-file-cache-enabled
+        (let ((files (ffip-get-cached-files root)))
+          (if (or invalidate-cache (not files))
+              (progn
+                (ffip-populate-cache root (ffip-scan-files root))
+                (cdr (ffip-get-cached-files root)))
+            (cdr files)))
+      (ffip-scan-files root))))
+
+;;;###autoload
+(defun ffip-invalidate-project-cache ()
+  "Manually force invalidation of the file cache for the project root."
+  (interactive)
+  (let* ((root (expand-file-name (or ffip-project-root (ffip-project-root)
+                                     (error "No project root found")))))
+    (ffip-clear-cache root)))
+
 ;;;###autoload
 (defun ffip-current-full-filename-match-pattern-p (REGEX)
   "Is current full file name (including directory) match the REGEX?"
@@ -242,14 +291,14 @@ directory they are found in so that they are unique."
     (string-match-p REGEX dir)))
 
 ;;;###autoload
-(defun find-file-in-project ()
+(defun find-file-in-project (&optional arg)
   "Prompt with a completing list of all files in the project to find one.
 
 The project's scope is defined as the first directory containing
 an `.emacs-project' file.  You can override this by locally
 setting the variable `ffip-project-root'."
-  (interactive)
-  (let* ((project-files (ffip-project-files))
+  (interactive "P")
+  (let* ((project-files (ffip-project-files arg))
          (files (mapcar 'car project-files))
          file root)
     (setq root (file-name-nondirectory (directory-file-name (or ffip-project-root (ffip-project-root)))))
